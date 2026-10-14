@@ -15,7 +15,9 @@ browses your libraries, streams to the phone, and downloads movies and episodes 
 - **Downloads**: the original file, or an optimized copy (1080p, 720p or 480p) that the server transcodes
   for this phone. Downloads run in the background, survive restarts and resume where they stopped (`If-Range`,
   so a file that changed on the server is fetched again rather than spliced). Subtitles and the poster are
-  saved too. "Wi-Fi only" is on by default.
+  saved too. "Wi-Fi only" is on by default. Downloads can be saved to internal storage or an SD (TF)
+  card (Settings → Save downloads to); no storage permission is needed. A download on a card that is not
+  inserted shows as not available and the item streams instead.
 - **Picture-in-picture**: leaving the player while it plays shrinks it into a floating window with rewind,
   play/pause and forward buttons (automatically on Android 12+). A media session gives headset, Bluetooth and
   system media controls.

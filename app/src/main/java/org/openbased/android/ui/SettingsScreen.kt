@@ -4,15 +4,17 @@ import android.graphics.Point
 import android.hardware.display.DisplayManager
 import android.view.Display
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -23,7 +25,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
+import org.openbased.android.download.DownloadLocations
 
 @Composable
 fun SettingsScreen(onSignOut: () -> Unit) {
@@ -71,6 +75,7 @@ fun SettingsScreen(onSignOut: () -> Unit) {
                 })
             },
         )
+        DownloadLocationSetting()
         ScreensInfo()
         OutlinedButton(onClick = { confirm = true }, modifier = Modifier.fillMaxWidth().padding(16.dp)) {
             Text("Sign out")
@@ -111,5 +116,39 @@ private fun ScreensInfo() {
         headlineContent = { Text("Screens") },
         supportingContent = { Text(screens.joinToString("\n")) },
     )
+}
+
+/** Where new downloads are saved: internal storage or an SD (TF) card. */
+@Composable
+private fun DownloadLocationSetting() {
+    val container = rememberContainer()
+    val context = LocalContext.current
+    val locations = remember { DownloadLocations.all(context) }
+    var chosen by remember {
+        mutableStateOf(DownloadLocations.choose(locations, container.settings.downloadLocation).root.absolutePath)
+    }
+    ListItem(
+        headlineContent = { Text("Save downloads to") },
+        supportingContent = {
+            Text(
+                if (locations.any { it.removable }) "Applies to new downloads. Existing downloads stay where they are."
+                else "No SD card found. Insert one to save downloads on it.",
+            )
+        },
+    )
+    locations.forEach { location ->
+        val path = location.root.absolutePath
+        ListItem(
+            headlineContent = { Text(location.label) },
+            supportingContent = { Text("${formatBytes(location.freeBytes)} free") },
+            leadingContent = {
+                RadioButton(selected = chosen == path, onClick = null)
+            },
+            modifier = Modifier.selectable(selected = chosen == path, role = Role.RadioButton) {
+                chosen = path
+                container.settings.downloadLocation = if (location.removable) path else null
+            },
+        )
+    }
 }
 

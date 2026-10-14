@@ -107,7 +107,8 @@ fun DetailScreen(mediaId: String, onBack: () -> Unit, onNeedNotifications: () ->
             val resumeAt = (detail?.progress ?: media.progressPosition?.let {
                 org.openbased.android.api.UserProgress(it, media.progressDuration, media.progressCompleted)
             })?.takeIf { !it.completed && it.position > 30 }?.position
-            val offline = download?.state == DownloadState.COMPLETE
+            // A download on an SD card that is not inserted cannot be played; stream instead.
+            val offline = download?.let { container.downloads.isAvailable(it) } == true
             Button(
                 onClick = { PlayerActivity.start(context, mediaId, offline, ((resumeAt ?: 0.0) * 1000).toLong()) },
                 modifier = Modifier.fillMaxWidth(),
@@ -131,6 +132,7 @@ fun DetailScreen(mediaId: String, onBack: () -> Unit, onNeedNotifications: () ->
             if (canDownload) {
                 DownloadSection(
                     download = download,
+                    available = download?.let { it.state != DownloadState.COMPLETE || container.downloads.isAvailable(it) } ?: true,
                     onDownload = { quality ->
                         onNeedNotifications()
                         scope.launch { container.downloads.start(media, quality) }
@@ -148,6 +150,7 @@ fun DetailScreen(mediaId: String, onBack: () -> Unit, onNeedNotifications: () ->
 @Composable
 private fun DownloadSection(
     download: DownloadEntity?,
+    available: Boolean,
     onDownload: (DownloadQuality) -> Unit,
     onRetry: () -> Unit,
     onDelete: () -> Unit,
@@ -177,7 +180,7 @@ private fun DownloadSection(
     }
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            Text(downloadStatus(download), style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+            Text(downloadStatus(download, available), style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
             if (download.state == DownloadState.FAILED) {
                 OutlinedButton(onClick = onRetry) { Text("Retry") }
             }
@@ -189,11 +192,12 @@ private fun DownloadSection(
     }
 }
 
-fun downloadStatus(d: DownloadEntity): String = when (d.state) {
+fun downloadStatus(d: DownloadEntity, available: Boolean = true): String = when (d.state) {
+    DownloadState.COMPLETE -> if (available) "Downloaded · ${d.quality.label} · ${formatBytes(d.totalBytes)}"
+        else "Downloaded to storage that is not available (SD card removed?)"
     DownloadState.QUEUED -> "Waiting to download (${d.quality.label})"
     DownloadState.PREPARING -> "Preparing ${d.quality.label} on the server" + (d.preparingPercent?.let { " · $it%" } ?: "")
     DownloadState.DOWNLOADING -> "Downloading · ${formatBytes(d.downloadedBytes)} of ${formatBytes(d.totalBytes)}"
-    DownloadState.COMPLETE -> "Downloaded · ${d.quality.label} · ${formatBytes(d.totalBytes)}"
     DownloadState.FAILED -> "Download failed: ${d.error ?: "unknown error"}"
 }
 

@@ -50,6 +50,11 @@ class DownloadRepository(
     suspend fun start(item: MediaEntity, quality: DownloadQuality) {
         val existing = dao.get(item.id)
         if (existing?.state == DownloadState.COMPLETE) return
+        existing?.let { directory(it).deleteRecursively() }
+        val directory = DownloadLocations.directory(
+            DownloadLocations.choose(DownloadLocations.all(context), settings.downloadLocation), item.id,
+        )
+        directory.deleteRecursively()
         dao.upsert(
             DownloadEntity(
                 mediaId = item.id,
@@ -58,10 +63,10 @@ class DownloadRepository(
                 quality = quality,
                 state = DownloadState.QUEUED,
                 durationMs = item.durationMs,
+                directory = directory.absolutePath,
                 createdAt = System.currentTimeMillis(),
             ),
         )
-        directory(item.id).deleteRecursively()
         enqueue(item.id)
     }
 
@@ -85,7 +90,7 @@ class DownloadRepository(
         WorkManager.getInstance(context).cancelUniqueWork(workName(mediaId))
         val download = dao.get(mediaId)
         dao.delete(mediaId)
-        directory(mediaId).deleteRecursively()
+        download?.let { directory(it).deleteRecursively() }
         download?.serverDownloadId?.let { id ->
             // Frees the prepared file on the server; it expires on its own otherwise.
             runCatching { api.send(Request.Builder().url(api.url("/api/v1/downloads/$id")).delete().build()).close() }
@@ -96,17 +101,23 @@ class DownloadRepository(
     suspend fun clear() {
         WorkManager.getInstance(context).cancelAllWorkByTag(TAG)
         dao.clear()
-        root(context).deleteRecursively()
+        File(context.getExternalFilesDir(null) ?: context.filesDir, "downloads").deleteRecursively()
+        DownloadLocations.all(context).forEach { File(it.root, "downloads").deleteRecursively() }
     }
 
-    fun directory(mediaId: String): File = File(root(context), mediaId)
+    /** Where a download's files are; downloads from before storage could be chosen are on internal storage. */
+    fun directory(download: DownloadEntity): File =
+        download.directory?.let(::File)
+            ?: File(File(context.getExternalFilesDir(null) ?: context.filesDir, "downloads"), download.mediaId)
+
+    /** False when the download is on an SD card that is not inserted (or its files are gone). */
+    fun isAvailable(download: DownloadEntity): Boolean =
+        download.state == DownloadState.COMPLETE && download.filePath?.let { File(it).exists() } == true
 
     companion object {
         const val TAG = "download"
 
         fun workName(mediaId: String) = "download-$mediaId"
-
-        fun root(context: Context): File = File(context.getExternalFilesDir(null) ?: context.filesDir, "downloads")
 
         fun episodeLabel(item: MediaEntity): String = buildString {
             if (item.seasonNumber != null && item.episodeNumber != null) {
@@ -134,6 +145,11 @@ class Settings(context: Context) {
     var dualScreen: Boolean
         get() = prefs.getBoolean("dualScreen", true)
         set(value) = prefs.edit().putBoolean("dualScreen", value).apply()
+
+    /** The storage folder new downloads go to (see [DownloadLocations]); null for internal storage. */
+    var downloadLocation: String?
+        get() = prefs.getString("downloadLocation", null)
+        set(value) = prefs.edit().putString("downloadLocation", value).apply()
 
     var defaultQuality: DownloadQuality
         get() = runCatching { DownloadQuality.valueOf(prefs.getString("quality", null)!!) }

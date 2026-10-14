@@ -1,6 +1,7 @@
 package org.openbased.android.data
 
 import android.content.Context
+import androidx.room.AutoMigration
 import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
@@ -10,7 +11,8 @@ import androidx.room.RoomDatabase
         LibraryEntity::class, MediaEntity::class, SyncStateEntity::class, DownloadEntity::class,
         PendingProgressEntity::class,
     ],
-    version = 1,
+    version = 2,
+    autoMigrations = [AutoMigration(from = 1, to = 2)],
 )
 abstract class AppDatabase : RoomDatabase() {
     abstract fun catalog(): CatalogDao

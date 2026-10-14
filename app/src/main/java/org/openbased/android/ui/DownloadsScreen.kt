@@ -26,6 +26,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import kotlinx.coroutines.launch
+import org.openbased.android.data.DownloadState
 import java.io.File
 
 @Composable
@@ -45,7 +46,8 @@ fun DownloadsScreen(onOpenItem: (String) -> Unit) {
                     supportingContent = {
                         Column {
                             d.subtitle?.let { Text(it) }
-                            Text(downloadStatus(d), style = MaterialTheme.typography.bodySmall,
+                            val available = d.state != DownloadState.COMPLETE || container.downloads.isAvailable(d)
+                            Text(downloadStatus(d, available), style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.outline)
                             downloadFraction(d)?.let {
                                 LinearProgressIndicator(progress = { it },

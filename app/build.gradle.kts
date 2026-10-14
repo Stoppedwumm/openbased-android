@@ -38,6 +38,12 @@ android {
         compose = true
     }
 
+    // Room's exported schemas, for migration tests. Robolectric reads the debug build's assets, so they go there
+    // (small JSON files, in debug builds only).
+    sourceSets {
+        getByName("debug").assets.srcDir("$projectDir/schemas")
+    }
+
     testOptions {
         unitTests.isIncludeAndroidResources = true
         unitTests.all { test ->

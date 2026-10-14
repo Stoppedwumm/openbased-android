@@ -50,7 +50,12 @@ class DownloadWorker(context: Context, params: WorkerParameters) : CoroutineWork
         var download = dao.get(mediaId) ?: return Result.success()
         if (download.state == DownloadState.COMPLETE) return Result.success()
         setForeground(foregroundInfo(download))
-        val dir = container.downloads.directory(mediaId).apply { mkdirs() }
+        val dir = container.downloads.directory(download).apply { mkdirs() }
+        if (!dir.isDirectory) {
+            // The SD card the download was started on is not inserted.
+            return if (runAttemptCount < MAX_ATTEMPTS) Result.retry()
+            else fail("The storage for this download is not available")
+        }
         return try {
             if (download.sourcePath == null) {
                 download = prepare(download)

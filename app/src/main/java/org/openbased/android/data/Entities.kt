@@ -66,6 +66,8 @@ data class DownloadEntity(
     /** Server-side preparation progress, 0–100. */
     val preparingPercent: Int? = null,
     val filePath: String? = null,
+    /** Folder holding this download's files (internal storage or an SD card); null for older downloads. */
+    val directory: String? = null,
     val posterPath: String? = null,
     /** JSON list of [LocalSubtitle]. */
     val subtitlesJson: String? = null,
