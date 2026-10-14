@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Self-hosted servers often run on a home network over plain HTTP, so cleartext is allowed. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+            <!-- Self-signed certificates the user installed on the device. -->
+            <certificates src="user" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>
