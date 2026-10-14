@@ -5,9 +5,14 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
 import org.openbased.android.playback.PlayerModes.KeyAction
+import org.openbased.android.playback.PlayerModes.Layout
+import org.openbased.android.playback.PlayerModes.Role
 import org.openbased.android.playback.PlayerModes.Screen
 
 class PlayerModesTest {
+
+    private val top = Screen(0, 1920, 1080)
+    private val bottom = Screen(4, 1240, 1080)
 
     @Test
     fun pipAspectRatiosStayWithinAndroidsLimits() {
@@ -18,12 +23,21 @@ class PlayerModesTest {
     }
 
     @Test
-    fun videoGoesToAnotherPresentationScreen() {
-        val screens = listOf(Screen(0, false), Screen(2, true), Screen(5, true), Screen(7, true, valid = false))
-        assertEquals(2, PlayerModes.otherScreen(screens, currentId = 0))
-        // The player was moved to the second screen: the video goes to the first one if it can show it.
-        assertEquals(5, PlayerModes.otherScreen(screens, currentId = 2))
-        assertNull(PlayerModes.otherScreen(listOf(Screen(0, false)), currentId = 0))
+    fun theVideoGoesToTheLargerScreen() {
+        // Started on the main (top) panel of a dual-screen handheld: video here, controls below.
+        assertEquals(Layout(4, Role.VIDEO), PlayerModes.dualLayout(listOf(top, bottom), currentId = 0))
+        // Started on the small panel: controls here, video on the main panel.
+        assertEquals(Layout(0, Role.CONTROLS), PlayerModes.dualLayout(listOf(top, bottom), currentId = 4))
+        assertEquals(Layout(4, Role.CONTROLS), Layout(4, Role.VIDEO).swapped)
+    }
+
+    @Test
+    fun virtualAndSwitchedOffDisplaysAreIgnored() {
+        val recording = Screen(9, 3840, 2160, private = true)
+        val off = Screen(5, 1240, 1080, on = false)
+        assertNull(PlayerModes.dualLayout(listOf(top, recording, off), currentId = 0))
+        assertNull(PlayerModes.dualLayout(listOf(top), currentId = 0))
+        assertEquals(4, PlayerModes.dualLayout(listOf(top, recording, bottom), currentId = 0)!!.otherId)
     }
 
     @Test
@@ -34,5 +48,8 @@ class PlayerModesTest {
         assertNull(PlayerModes.keyAction(KeyEvent.KEYCODE_DPAD_LEFT, controlsVisible = true))
         assertEquals(KeyAction.SEEK_BACK, PlayerModes.keyAction(KeyEvent.KEYCODE_DPAD_LEFT, controlsVisible = false))
         assertEquals(KeyAction.SWAP_SCREENS, PlayerModes.keyAction(KeyEvent.KEYCODE_BUTTON_SELECT, controlsVisible = false))
+        // Leaving always works, whatever is focused.
+        assertEquals(KeyAction.CLOSE, PlayerModes.keyAction(KeyEvent.KEYCODE_BUTTON_B, controlsVisible = true))
+        assertEquals(KeyAction.CLOSE, PlayerModes.keyAction(KeyEvent.KEYCODE_BACK, controlsVisible = false))
     }
 }

@@ -67,6 +67,16 @@
             android:taskAffinity="org.openbased.android.player"
             android:theme="@style/Theme.OpenBased.Player" />
 
+        <!-- Shows the video or the controls on the second screen of a dual-screen device. -->
+        <activity
+            android:name=".playback.CompanionActivity"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|navigation|density"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:resizeableActivity="true"
+            android:taskAffinity="org.openbased.android.companion"
+            android:theme="@style/Theme.OpenBased.Player" />
+
         <!-- WorkManager runs downloads as a foreground service. -->
         <service
             android:name="androidx.work.impl.foreground.SystemForegroundService"

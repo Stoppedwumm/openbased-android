@@ -20,12 +20,14 @@ browses your libraries, streams to the phone, and downloads movies and episodes 
   play/pause and forward buttons (automatically on Android 12+). A media session gives headset, Bluetooth and
   system media controls.
 - **Dual-screen devices**: on Android handhelds with two screens (such as the AYN Thor or AYANEO Flip DS), or
-  with an external display, the video plays full screen on the other screen while this one shows the
-  controls: seek bar, play/pause, subtitle and audio track choice. **Swap screens** moves the controls to the
-  other screen; **Use one screen** goes back to normal. If the second display goes away, playback continues
-  on this screen.
+  with an external display, the video plays on the larger screen and the other one shows touch controls: seek
+  bar, play/pause, subtitle and audio track choice, **Swap screens** and **Close**. The second screen is driven
+  by a companion activity opened there; on displays apps cannot open on, the video is shown there in a
+  video-only window instead. Settings lists the screens Android reports.
+- **Leaving the player**: the close button (top left, with the controls), Back, B or Escape end playback, on
+  either screen.
 - **Game controllers**: A plays and pauses, L1/R1 skip back 10 s and forward 30 s, the D-pad seeks while the
-  controls are hidden, Select swaps screens, Y shows the controls, B goes back.
+  controls are hidden, Select swaps screens, Y shows the controls, B closes the player.
 - **Watch progress** is saved locally first and sent in batches with the time it was recorded, so watching
   offline or on a flaky connection is never lost and the newest progress across devices wins.
 
@@ -84,7 +86,7 @@ mirror.
 | `api` | `OpenBasedApi` (REST client), `AuthInterceptor` (adds the token for the signed-in server only; refreshes once on 401), models |
 | `data` | Room database (catalogue, downloads, progress queue), `CatalogRepository` (sync), `ProgressRepository` (queue + batch), sync workers |
 | `download` | `DownloadRepository`, `DownloadWorker` (WorkManager, foreground), `ResumableFetcher` (Range + If-Range) |
-| `playback` | `PlayerActivity` (incl. picture-in-picture, dual screens, controller keys), `VideoPresentation` (video on a second display), `RestartingPlayer` (seeking in remuxed/transcoded streams), `PlayerModes`, `DeviceCapabilities` |
+| `playback` | `PlayerActivity` (incl. picture-in-picture, dual screens, controller keys), `CompanionActivity` (video or controls on the second screen), `VideoPresentation` (video-only fallback), `RestartingPlayer` (seeking in remuxed/transcoded streams), `PlayerModes`, `DeviceCapabilities` |
 | `ui` | Jetpack Compose screens: sign-in, home, library, series, search, detail, downloads, settings |
 
 ### Refresh tokens
@@ -101,11 +103,7 @@ then invalid and the user has to sign in again; that is the price of reuse detec
   but the app has not yet been run on a device or emulator. Expect UI rough edges.
 - Music libraries list their tracks, but there is no audio-specific player (no background playback or queue).
 - No Chromecast or Android TV interface yet.
-- Picture-in-picture and dual-screen mode are built and their logic is unit-tested, but they have not been
-  tried on a device. Two things depend on the device:
-  - Swap screens needs a device that lets apps start on its second screen. Where it doesn't, the app says so;
-    use the device's own screen-swap feature instead.
-  - Playback pauses when the controls screen goes to the background, also in dual-screen mode, because the
-    video window belongs to the player screen and may be hidden with it.
+- Picture-in-picture and dual-screen mode are built and their logic is unit-tested, but have not been tried
+  on a device by us. Playback pauses when the player screen goes to the background, also with two screens.
 - Signing out deletes downloads and any progress that has not been sent yet (the dialog says so).
 - Items with several files always play and download the first file.

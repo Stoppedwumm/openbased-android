@@ -12,6 +12,7 @@ import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.graphics.Color
+import android.graphics.Point
 import android.graphics.Rect
 import android.graphics.drawable.Icon
 import android.hardware.display.DisplayManager
@@ -24,12 +25,11 @@ import android.view.Gravity
 import android.view.KeyEvent
 import android.view.ViewGroup
 import android.view.WindowManager
-import android.widget.Button
 import android.widget.FrameLayout
-import android.widget.LinearLayout
-import android.widget.TextView
+import android.widget.ImageButton
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.OnBackPressedCallback
 import androidx.annotation.OptIn
 import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
@@ -49,7 +49,6 @@ import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.session.MediaSession
-import androidx.media3.ui.PlayerControlView
 import androidx.media3.ui.PlayerView
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -75,18 +74,26 @@ import java.io.File
  * - Game controllers: A plays/pauses, L1/R1 seek, Select swaps screens, Y shows the controls.
  */
 @OptIn(UnstableApi::class)
-class PlayerActivity : ComponentActivity() {
+class PlayerActivity : ComponentActivity(), PlaybackHolder.Host {
 
     private val container by lazy { (application as OpenBasedApp).container }
     private val settings by lazy { container.settings }
     private lateinit var exo: ExoPlayer
     private lateinit var root: FrameLayout
     private lateinit var view: PlayerView
-    private var player: Player? = null
+    override var player: Player? = null
+        private set
     private var mediaSession: MediaSession? = null
+    /** The dual-screen layout in use, or null with one screen. */
+    private var layout: PlayerModes.Layout? = null
+    private var userSwapped = false
+    /** The device does not let apps open on the other display; only a video-only window can go there. */
+    private var companionBlocked = false
+    /** Video-only window on the other display, when the companion cannot open there. */
     private var presentation: VideoPresentation? = null
-    private var dualScreenDeclined = false
-    private var title: String = ""
+    private lateinit var videoScreen: FrameLayout
+    override var title: String = ""
+        private set
     private var sessionId: String? = null
     private var durationMs: Long? = null
     private var progressJob: Job? = null
@@ -134,7 +141,23 @@ class PlayerActivity : ComponentActivity() {
             override fun dispatchKeyEvent(event: KeyEvent) = handleKey(event) || super.dispatchKeyEvent(event)
         }.apply { setBackgroundColor(Color.BLACK) }
         setContentView(root)
+        val closeButton = ImageButton(this).apply {
+            setImageResource(android.R.drawable.ic_menu_close_clear_cancel)
+            contentDescription = getString(R.string.close_player)
+            setBackgroundColor(Color.TRANSPARENT)
+            setOnClickListener { close() }
+        }
+        view.setControllerVisibilityListener(PlayerView.ControllerVisibilityListener { closeButton.visibility = it })
+        videoScreen = FrameLayout(this).apply {
+            addView(view, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+            addView(closeButton, FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.START).apply { setMargins(24, 24, 24, 24) })
+        }
         showVideoHere()
+        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() = close()
+        })
+        PlaybackHolder.host = this
         exo.addListener(object : Player.Listener {
             override fun onPlaybackStateChanged(state: Int) {
                 if (state == Player.STATE_ENDED) {
@@ -230,133 +253,127 @@ class PlayerActivity : ComponentActivity() {
         this.player = player
         mediaSession = MediaSession.Builder(this, player).setId("player-$mediaId-${System.nanoTime()}").build()
         player.playWhenReady = true
-        updateScreens()
-        updatePictureInPicture()
+        // Always applied here: with one screen the layout does not change, but the video view needs the player.
+        apply(wantedLayout(), player)
     }
 
     // --- Screens
-
-    /** The display for the video, if the device has another one and dual-screen mode is on. */
-    private fun otherDisplay(): Display? {
-        if (!settings.dualScreen || dualScreenDeclined || isInPictureInPictureMode) return null
-        val current = currentDisplay() ?: return null
-        val presentationIds = displays.getDisplays(DisplayManager.DISPLAY_CATEGORY_PRESENTATION).map { it.displayId }.toSet()
-        val screens = displays.displays.map {
-            PlayerModes.Screen(it.displayId, it.displayId in presentationIds, it.state != Display.STATE_OFF)
-        }
-        return PlayerModes.otherScreen(screens, current.displayId)?.let { displays.getDisplay(it) }
-    }
 
     private fun currentDisplay(): Display? =
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) display
         else @Suppress("DEPRECATION") windowManager.defaultDisplay
 
+    private fun screens(): List<PlayerModes.Screen> = displays.displays.map { d ->
+        val size = Point().also { @Suppress("DEPRECATION") d.getRealSize(it) }
+        PlayerModes.Screen(d.displayId, size.x, size.y, d.state != Display.STATE_OFF,
+            (d.flags and Display.FLAG_PRIVATE) != 0)
+    }
+
+    /** Video on the larger of two screens and controls on the other, unless the user swapped them. */
+    private fun wantedLayout(): PlayerModes.Layout? {
+        if (!settings.dualScreen || isInPictureInPictureMode) return null
+        val current = currentDisplay() ?: return null
+        val layout = PlayerModes.dualLayout(screens(), current.displayId) ?: return null
+        return if (userSwapped) layout.swapped else layout
+    }
+
     private fun updateScreens() {
         val p = player ?: return
-        val other = otherDisplay()
-        when {
-            other == null && presentation != null -> showVideoHere()
-            other != null && presentation?.display?.displayId != other.displayId -> showVideoOn(other, p)
-        }
-        if (presentation == null) view.player = p
+        val wanted = wantedLayout()
+        if (wanted != layout) apply(wanted, p)
     }
 
-    /** Video on the other display, controls here. */
-    private fun showVideoOn(display: Display, p: Player) {
-        presentation?.let { it.detach(); it.dismiss() }
-        view.player = null
-        val shown = VideoPresentation(this, display, p)
-        try {
-            shown.show()
-        } catch (e: WindowManager.InvalidDisplayException) {
-            showVideoHere()
-            return
+    private fun apply(target: PlayerModes.Layout?, p: Player) {
+        closeOtherScreen()
+        layout = target
+        when {
+            target == null -> showVideoHere()
+            target.here == PlayerModes.Role.VIDEO -> {
+                showVideoHere()
+                // Without a companion the other screen stays as it is; the controls are on the video.
+                if (!companionBlocked) startCompanion(target.otherId, PlayerModes.Role.CONTROLS)
+            }
+            else -> {
+                showControlsHere(p)
+                if (companionBlocked || !startCompanion(target.otherId, PlayerModes.Role.VIDEO)) {
+                    showPresentation(target.otherId, p)
+                }
+            }
         }
-        presentation = shown
-        root.removeAllViews()
-        root.addView(controlPanel(p), ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
-            ViewGroup.LayoutParams.MATCH_PARENT))
-        // The controls screen may be small or portrait; let it rotate freely.
-        requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
         updatePictureInPicture()
     }
 
-    /** Video and controls on this display. */
-    private fun showVideoHere() {
+    private fun startCompanion(displayId: Int, role: PlayerModes.Role): Boolean = try {
+        startActivity(
+            CompanionActivity.intent(this, displayId, role).addFlags(Intent.FLAG_ACTIVITY_NO_USER_ACTION),
+            ActivityOptions.makeBasic().setLaunchDisplayId(displayId).toBundle(),
+        )
+        true
+    } catch (e: SecurityException) {
+        companionBlocked = true
+        false
+    }
+
+    /** Video-only window on the other display, for displays apps cannot open on (e.g. some external screens). */
+    private fun showPresentation(displayId: Int, p: Player) {
+        val display = displays.getDisplay(displayId)
+        val shown = display?.let { VideoPresentation(this, it, p, ::handleKey) }
+        try {
+            shown?.show() ?: throw WindowManager.InvalidDisplayException()
+            presentation = shown
+        } catch (e: WindowManager.InvalidDisplayException) {
+            layout = null
+            showVideoHere()
+        }
+    }
+
+    private fun closeOtherScreen() {
+        PlaybackHolder.companion?.release()
         presentation?.let { it.detach(); it.dismiss() }
         presentation = null
+    }
+
+    /** Video (with on-screen controls and a close button) on this display. */
+    private fun showVideoHere() {
         root.removeAllViews()
-        root.addView(view, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+        root.addView(videoScreen, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
             ViewGroup.LayoutParams.MATCH_PARENT))
         view.player = player
-        requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
-        updatePictureInPicture()
+        // A phone turns to landscape; the panels of a dual-screen device stay as they are.
+        requestedOrientation = if (layout == null) ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+        else ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
     }
 
-    /** Touch controls for the screen without the video: title, always-visible transport controls, screen buttons. */
-    private fun controlPanel(p: Player) = LinearLayout(this).apply {
-        orientation = LinearLayout.VERTICAL
-        gravity = Gravity.CENTER
-        setBackgroundColor(Color.rgb(18, 18, 22))
-        setPadding(32, 32, 32, 32)
-        addView(TextView(context).apply {
-            text = title
-            textSize = 20f
-            setTextColor(Color.WHITE)
-            gravity = Gravity.CENTER
-        })
-        addView(TextView(context).apply {
-            setText(R.string.playing_on_other_screen)
-            setTextColor(Color.LTGRAY)
-            gravity = Gravity.CENTER
-        })
-        addView(
-            PlayerControlView(context).apply {
-                player = p
-                showTimeoutMs = 0
-                setShowSubtitleButton(true)
-                show()
-            },
-            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f),
-        )
-        addView(LinearLayout(context).apply {
-            gravity = Gravity.CENTER
-            addView(Button(context).apply {
-                setText(R.string.swap_screens)
-                setOnClickListener { swapScreens() }
-            })
-            addView(Button(context).apply {
-                setText(R.string.use_one_screen)
-                setOnClickListener {
-                    dualScreenDeclined = true
-                    showVideoHere()
-                }
-            })
-        })
+    /** Touch controls on this display; the video is on the other one. */
+    private fun showControlsHere(p: Player) {
+        view.player = null
+        root.removeAllViews()
+        root.addView(controlPanel(this, p, title, ::swapScreens, ::close), ViewGroup.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
     }
 
-    /**
-     * Moves the controls to the other display by restarting the player there; the video then plays on this one.
-     * Some devices do not let apps start on their second screen; they keep the current layout.
-     */
-    private fun swapScreens() {
-        val target = presentation?.display ?: otherDisplay() ?: return
+    /** Exchanges what the two screens show. */
+    override fun swapScreens() {
         val p = player ?: return
-        record()
-        val intent = startIntent(this, mediaId, intent.getBooleanExtra(EXTRA_OFFLINE, false), p.currentPosition)
-            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_MULTIPLE_TASK)
-        try {
-            startActivity(intent, ActivityOptions.makeBasic().setLaunchDisplayId(target.displayId).toBundle())
-            finish()
-        } catch (e: SecurityException) {
-            Toast.makeText(this, "This device does not let apps open on the other screen. Use its screen-swap " +
-                "button instead.", Toast.LENGTH_LONG).show()
-        }
+        if (layout == null) return
+        userSwapped = !userSwapped
+        apply(wantedLayout(), p)
+    }
+
+    override fun close() {
+        finish()
+    }
+
+    override fun companionFailed() {
+        companionBlocked = true
+        val p = player ?: return
+        layout?.let { apply(it, p) }
     }
 
     // --- Picture-in-picture
 
-    private fun pictureInPictureAllowed() = settings.pictureInPicture && presentation == null &&
+    private fun pictureInPictureAllowed() = settings.pictureInPicture && layout == null &&
         packageManager.hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE)
 
     private fun pictureInPictureParams(): PictureInPictureParams {
@@ -414,10 +431,10 @@ class PlayerActivity : ComponentActivity() {
 
     // --- Game controllers
 
-    /** Returns true when the key was a player shortcut. */
-    private fun handleKey(event: KeyEvent): Boolean {
+    /** Returns true when the key was a player shortcut. Also used for keys pressed on the other screen. */
+    override fun handleKey(event: KeyEvent): Boolean {
         val p = player ?: return false
-        val controlsVisible = presentation != null || view.isControllerFullyVisible
+        val controlsVisible = layout != null || view.isControllerFullyVisible
         val action = PlayerModes.keyAction(event.keyCode, controlsVisible) ?: return false
         if (event.action != KeyEvent.ACTION_DOWN) return true
         when (action) {
@@ -426,12 +443,16 @@ class PlayerActivity : ComponentActivity() {
             PlayerModes.KeyAction.SEEK_FORWARD -> p.seekForward()
             PlayerModes.KeyAction.SWAP_SCREENS -> swapScreens()
             PlayerModes.KeyAction.TOGGLE_CONTROLS ->
-                if (presentation == null) {
+                if (layout == null) {
                     if (controlsVisible) view.hideController() else view.showController()
                 }
+            PlayerModes.KeyAction.CLOSE -> close()
         }
         return true
     }
+
+    /** Keys no view handled, e.g. when nothing has focus. */
+    override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean = handleKey(event) || super.onKeyDown(keyCode, event)
 
     private fun subtitle(uri: Uri, language: String?, label: String, forced: Boolean, default: Boolean) =
         MediaItem.SubtitleConfiguration.Builder(uri)
@@ -476,7 +497,8 @@ class PlayerActivity : ComponentActivity() {
         progressJob?.cancel()
         displays.unregisterDisplayListener(displayListener)
         unregisterReceiver(pipControls)
-        presentation?.let { it.detach(); it.dismiss() }
+        closeOtherScreen()
+        if (PlaybackHolder.host === this) PlaybackHolder.host = null
         mediaSession?.release()
         exo.release()
         sessionId?.let { id -> container.appScope.launch { runCatching { container.api.endSession(id) } } }

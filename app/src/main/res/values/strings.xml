@@ -4,5 +4,5 @@
     <string name="download_channel">Downloads</string>
     <string name="playing_on_other_screen">Playing on the other screen</string>
     <string name="swap_screens">Swap screens</string>
-    <string name="use_one_screen">Use one screen</string>
+    <string name="close_player">Close</string>
 </resources>

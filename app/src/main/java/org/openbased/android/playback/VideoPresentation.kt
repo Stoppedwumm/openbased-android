@@ -5,6 +5,7 @@ import android.content.Context
 import android.graphics.Color
 import android.os.Bundle
 import android.view.Display
+import android.view.KeyEvent
 import android.view.WindowManager
 import androidx.annotation.OptIn
 import androidx.media3.common.Player
@@ -17,13 +18,19 @@ import androidx.media3.ui.PlayerView
  * dual-screen device, or an external display). The controls stay on the activity's screen.
  */
 @OptIn(UnstableApi::class)
-class VideoPresentation(context: Context, display: Display, private val player: Player) :
-    Presentation(context, display) {
+class VideoPresentation(
+    context: Context,
+    display: Display,
+    private val player: Player,
+    /** Keys pressed while this window has focus go to the player screen, so Back closes playback. */
+    private val onKey: (KeyEvent) -> Boolean,
+) : Presentation(context, display) {
 
     private lateinit var view: PlayerView
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        setCancelable(false)
         window?.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         view = PlayerView(context).apply {
             useController = false
@@ -34,6 +41,8 @@ class VideoPresentation(context: Context, display: Display, private val player: 
         }
         setContentView(view)
     }
+
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean = onKey(event) || super.dispatchKeyEvent(event)
 
     /** Releases the video surface, so the player can render on the activity's screen again. */
     fun detach() {
