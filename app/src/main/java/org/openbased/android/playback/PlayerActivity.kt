@@ -23,6 +23,7 @@ import android.util.Rational
 import android.view.Display
 import android.view.Gravity
 import android.view.KeyEvent
+import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.widget.FrameLayout
@@ -92,6 +93,7 @@ class PlayerActivity : ComponentActivity(), PlaybackHolder.Host {
     /** Video-only window on the other display, when the companion cannot open there. */
     private var presentation: VideoPresentation? = null
     private lateinit var videoScreen: FrameLayout
+    private lateinit var closeButton: ImageButton
     override var title: String = ""
         private set
     private var sessionId: String? = null
@@ -141,13 +143,13 @@ class PlayerActivity : ComponentActivity(), PlaybackHolder.Host {
             override fun dispatchKeyEvent(event: KeyEvent) = handleKey(event) || super.dispatchKeyEvent(event)
         }.apply { setBackgroundColor(Color.BLACK) }
         setContentView(root)
-        val closeButton = ImageButton(this).apply {
+        closeButton = ImageButton(this).apply {
             setImageResource(android.R.drawable.ic_menu_close_clear_cancel)
             contentDescription = getString(R.string.close_player)
             setBackgroundColor(Color.TRANSPARENT)
             setOnClickListener { close() }
         }
-        view.setControllerVisibilityListener(PlayerView.ControllerVisibilityListener { closeButton.visibility = it })
+        view.setControllerVisibilityListener(PlayerView.ControllerVisibilityListener { updateCloseButton() })
         videoScreen = FrameLayout(this).apply {
             addView(view, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
             addView(closeButton, FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
@@ -339,9 +341,18 @@ class PlayerActivity : ComponentActivity(), PlaybackHolder.Host {
         root.addView(videoScreen, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
             ViewGroup.LayoutParams.MATCH_PARENT))
         view.player = player
+        updateCloseButton()
         // A phone turns to landscape; the panels of a dual-screen device stay as they are.
         requestedOrientation = if (layout == null) ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
         else ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+    }
+
+    /**
+     * The close button shows with the on-screen controls, but not while a second screen is in use: closing is
+     * then on the controls screen, and the video screen stays clean.
+     */
+    private fun updateCloseButton() {
+        closeButton.visibility = if (layout == null && view.isControllerFullyVisible) View.VISIBLE else View.GONE
     }
 
     /** Touch controls on this display; the video is on the other one. */

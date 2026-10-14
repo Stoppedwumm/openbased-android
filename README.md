@@ -26,8 +26,8 @@ browses your libraries, streams to the phone, and downloads movies and episodes 
   bar, play/pause, subtitle and audio track choice, **Swap screens** and **Close**. The second screen is driven
   by a companion activity opened there; on displays apps cannot open on, the video is shown there in a
   video-only window instead. Settings lists the screens Android reports.
-- **Leaving the player**: the close button (top left, with the controls), Back, B or Escape end playback, on
-  either screen.
+- **Leaving the player**: the close button (top left, with the controls; on the controls screen when a second
+  screen is in use), Back, B or Escape end playback, on either screen.
 - **Game controllers**: A plays and pauses, L1/R1 skip back 10 s and forward 30 s, the D-pad seeks while the
   controls are hidden, Select swaps screens, Y shows the controls, B closes the player.
 - **Watch progress** is saved locally first and sent in batches with the time it was recorded, so watching
