@@ -20,8 +20,12 @@ Agreed with the OpenBased team by email (reply to `email-to-openbased-team.md`).
 
 ## Who does what, in order
 
-1. Points 1 + 2 (client, refresh tokens, persisted sign-ins, revoke): **server team**, in progress. They'll tell us when we can test.
-2. Point 5 (offline progress): **us**. Done locally; patch in `upstream-patches/`, waiting for a PR.
+1. Points 1 + 2 (client, refresh tokens, persisted sign-ins, revoke): **server team**. Landed in `de83085` on `claude/serene-hawking-8lbcn6`; the built-in client can be turned off with `openbased.builtin-clients.android`.
+2. Point 5 (offline progress): **us**. **Merged** as Stoppedwumm/openbased#1 (`c49c5c5`), with follow-ups from the team:
+   - `recordedAt` is also clamped to no earlier than the time the media item was added (protects against reset device clocks).
+   - A history entry is only extended by a viewing at or before `recordedAt`; an offline viewing synced late becomes its own entry.
+   - An unexpected error in one batch item gives `FAILED` / `INTERNAL_ERROR` for that item; a malformed item rejects the whole batch with `422 VALIDATION_FAILED`.
+   - Concurrent first updates for the same media item retry once instead of returning 500 (`1b6d7ae`).
 3. Point 3 (`media.download` + `/download`): **us**, after point 5.
 4. Point 4, then the rest of point 6: later.
 
