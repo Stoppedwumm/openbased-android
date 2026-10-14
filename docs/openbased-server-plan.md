@@ -30,7 +30,12 @@ Agreed with the OpenBased team by email (reply to `email-to-openbased-team.md`).
    - Check `media.download` in the granted scopes before offering downloads.
    - `HEAD` first to get `Content-Length` and `ETag`; resume with `Range: bytes=<n>-` + `If-Range: <ETag>`.
    - A `206` continues the file; a `200` means the file changed, so restart from zero with the new `ETag`.
-4. Point 4, then the rest of point 6: later.
+4. Point 4 and point 6: **us**, in review (each PR is independent; all four together pass 52 tests and the Kodi tests):
+   - Optimized downloads: Stoppedwumm/openbased#3 (`POST /downloads` → `DOWNLOAD_READY` event → `GET /downloads/{id}/file`).
+   - Incremental sync: Stoppedwumm/openbased#4 (`GET /media/removed?since=` first; if `resetRequired`, reload; else `GET /media?updatedSince=`; store `syncedAt`).
+   - Artwork sizes: Stoppedwumm/openbased#5 (`?w=` rounds up to 92/154/185/342/500/780/1280).
+   - Subtitles: Stoppedwumm/openbased#6 (`GET /media/{id}/subtitles`, then `/subtitles/{trackId}` as WebVTT; works with `media.download` for offline).
+   - HLS: later.
 
 ## Issue drafts (one per point, for `Stoppedwumm/openbased`)
 
