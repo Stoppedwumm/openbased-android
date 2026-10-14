@@ -125,6 +125,16 @@ class Settings(context: Context) {
         get() = prefs.getBoolean("wifiOnly", true)
         set(value) = prefs.edit().putBoolean("wifiOnly", value).apply()
 
+    /** Keep playing in a small window when leaving the player. */
+    var pictureInPicture: Boolean
+        get() = prefs.getBoolean("pictureInPicture", true)
+        set(value) = prefs.edit().putBoolean("pictureInPicture", value).apply()
+
+    /** On devices with a second screen, show the video there and the controls on this one. */
+    var dualScreen: Boolean
+        get() = prefs.getBoolean("dualScreen", true)
+        set(value) = prefs.edit().putBoolean("dualScreen", value).apply()
+
     var defaultQuality: DownloadQuality
         get() = runCatching { DownloadQuality.valueOf(prefs.getString("quality", null)!!) }
             .getOrDefault(DownloadQuality.MEDIUM)

@@ -23,6 +23,8 @@ import androidx.compose.ui.unit.dp
 fun SettingsScreen(onSignOut: () -> Unit) {
     val container = rememberContainer()
     var wifiOnly by remember { mutableStateOf(container.settings.wifiOnly) }
+    var pip by remember { mutableStateOf(container.settings.pictureInPicture) }
+    var dualScreen by remember { mutableStateOf(container.settings.dualScreen) }
     var confirm by remember { mutableStateOf(false) }
     Column(Modifier.fillMaxSize()) {
         Text("Settings", style = MaterialTheme.typography.headlineMedium, modifier = Modifier.padding(16.dp))
@@ -37,6 +39,29 @@ fun SettingsScreen(onSignOut: () -> Unit) {
                 Switch(checked = wifiOnly, onCheckedChange = {
                     wifiOnly = it
                     container.settings.wifiOnly = it
+                })
+            },
+        )
+        ListItem(
+            headlineContent = { Text("Picture-in-picture") },
+            supportingContent = { Text("Keep playing in a small window when you leave the player.") },
+            trailingContent = {
+                Switch(checked = pip, onCheckedChange = {
+                    pip = it
+                    container.settings.pictureInPicture = it
+                })
+            },
+        )
+        ListItem(
+            headlineContent = { Text("Use a second screen") },
+            supportingContent = {
+                Text("On dual-screen devices, or with an external display, play the video on the other screen " +
+                    "and keep the controls on this one.")
+            },
+            trailingContent = {
+                Switch(checked = dualScreen, onCheckedChange = {
+                    dualScreen = it
+                    container.settings.dualScreen = it
                 })
             },
         )

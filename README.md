@@ -16,23 +16,33 @@ browses your libraries, streams to the phone, and downloads movies and episodes 
   for this phone. Downloads run in the background, survive restarts and resume where they stopped (`If-Range`,
   so a file that changed on the server is fetched again rather than spliced). Subtitles and the poster are
   saved too. "Wi-Fi only" is on by default.
+- **Picture-in-picture**: leaving the player while it plays shrinks it into a floating window with rewind,
+  play/pause and forward buttons (automatically on Android 12+). A media session gives headset, Bluetooth and
+  system media controls.
+- **Dual-screen devices**: on Android handhelds with two screens (such as the AYN Thor or AYANEO Flip DS), or
+  with an external display, the video plays full screen on the other screen while this one shows the
+  controls: seek bar, play/pause, subtitle and audio track choice. **Swap screens** moves the controls to the
+  other screen; **Use one screen** goes back to normal. If the second display goes away, playback continues
+  on this screen.
+- **Game controllers**: A plays and pauses, L1/R1 skip back 10 s and forward 30 s, the D-pad seeks while the
+  controls are hidden, Select swaps screens, Y shows the controls, B goes back.
 - **Watch progress** is saved locally first and sent in batches with the time it was recorded, so watching
   offline or on a flaky connection is never lost and the newest progress across devices wins.
 
 ## Server requirements
 
-Sign-in needs a server with the built-in Android client and refresh tokens for public clients (OpenBased
-`claude/serene-hawking-8lbcn6` at `de83085` or later). The other features need these PRs, and the app degrades
-when they are missing:
+Everything the app uses is in OpenBased `claude/serene-hawking-8lbcn6` as of `c48d712` (Stoppedwumm/openbased#1
+to #6 are merged). Sign-in needs at least `de83085` (built-in Android client, refresh tokens for public
+clients). On older servers the app degrades instead of failing:
 
 | Feature | Server change | Without it |
 | --- | --- | --- |
-| Offline progress | Stoppedwumm/openbased#1 (merged) | — |
-| Original downloads | Stoppedwumm/openbased#2 (merged) | — |
-| Subtitles | Stoppedwumm/openbased#6 (merged) | Played without subtitles |
+| Offline progress | Stoppedwumm/openbased#1 | — (required) |
+| Original downloads | Stoppedwumm/openbased#2 | — (required for downloads) |
 | Optimized downloads | Stoppedwumm/openbased#3 | The original file is downloaded |
 | Incremental sync | Stoppedwumm/openbased#4 | Every sync reloads the catalogue |
 | Artwork sizes (`?w=`) | Stoppedwumm/openbased#5 | Full-size artwork is loaded |
+| Subtitles | Stoppedwumm/openbased#6 | Played without subtitles |
 
 ## Building
 
@@ -74,7 +84,7 @@ mirror.
 | `api` | `OpenBasedApi` (REST client), `AuthInterceptor` (adds the token for the signed-in server only; refreshes once on 401), models |
 | `data` | Room database (catalogue, downloads, progress queue), `CatalogRepository` (sync), `ProgressRepository` (queue + batch), sync workers |
 | `download` | `DownloadRepository`, `DownloadWorker` (WorkManager, foreground), `ResumableFetcher` (Range + If-Range) |
-| `playback` | `PlayerActivity`, `RestartingPlayer` (seeking in remuxed/transcoded streams), `DeviceCapabilities` |
+| `playback` | `PlayerActivity` (incl. picture-in-picture, dual screens, controller keys), `VideoPresentation` (video on a second display), `RestartingPlayer` (seeking in remuxed/transcoded streams), `PlayerModes`, `DeviceCapabilities` |
 | `ui` | Jetpack Compose screens: sign-in, home, library, series, search, detail, downloads, settings |
 
 ### Refresh tokens
@@ -90,6 +100,12 @@ then invalid and the user has to sign in again; that is the price of reuse detec
 - The UI has been built and unit-tested, and the networking has been tested end-to-end against a real server,
   but the app has not yet been run on a device or emulator. Expect UI rough edges.
 - Music libraries list their tracks, but there is no audio-specific player (no background playback or queue).
-- No Chromecast, picture-in-picture or Android TV interface yet.
+- No Chromecast or Android TV interface yet.
+- Picture-in-picture and dual-screen mode are built and their logic is unit-tested, but they have not been
+  tried on a device. Two things depend on the device:
+  - Swap screens needs a device that lets apps start on its second screen. Where it doesn't, the app says so;
+    use the device's own screen-swap feature instead.
+  - Playback pauses when the controls screen goes to the background, also in dual-screen mode, because the
+    video window belongs to the player screen and may be hidden with it.
 - Signing out deletes downloads and any progress that has not been sent yet (the dialog says so).
 - Items with several files always play and download the first file.

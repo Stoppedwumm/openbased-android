@@ -56,11 +56,15 @@
             </intent-filter>
         </activity>
 
+        <!-- Its own task, so picture-in-picture floats over the rest of the app and swapping screens can move it. -->
         <activity
             android:name=".playback.PlayerActivity"
-            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden"
+            android:autoRemoveFromRecents="true"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|navigation|density"
             android:exported="false"
-            android:supportsPictureInPicture="false"
+            android:resizeableActivity="true"
+            android:supportsPictureInPicture="true"
+            android:taskAffinity="org.openbased.android.player"
             android:theme="@style/Theme.OpenBased.Player" />
 
         <!-- WorkManager runs downloads as a foreground service. -->
