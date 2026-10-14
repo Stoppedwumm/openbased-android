@@ -1,0 +1,479 @@
+From 5eb47de5b1a584db6506709470179e6dd5eeae8d Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Wed, 14 Oct 2026 10:21:25 +0000
+Subject: [PATCH] Sync offline playback progress: recordedAt and batch updates
+
+PUT /api/v1/media/{id}/progress accepts an optional recordedAt. It is clamped
+to the server clock, updates older than the stored progress are not applied
+(the response reports applied=false with the stored values), and the watch
+history entry is dated with it. POST /api/v1/progress/batch applies up to 500
+queued updates oldest first, each succeeding or failing on its own.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01DA55GNEskURVtgvTAszUWg
+---
+ README.md                                     |  14 +-
+ .../progress/ProgressController.java          | 135 ++++++++++--------
+ .../openbased/progress/ProgressService.java   | 117 +++++++++++++++
+ .../progress/WatchHistoryRepository.java      |   4 +-
+ .../org/openbased/ApiIntegrationTest.java     |  58 ++++++++
+ 5 files changed, 268 insertions(+), 60 deletions(-)
+ create mode 100644 src/main/java/org/openbased/progress/ProgressService.java
+
+diff --git a/README.md b/README.md
+index af23f51..ce9a232 100644
+--- a/README.md
++++ b/README.md
+@@ -166,7 +166,7 @@ timeout, or on restart.
+ | `POST /api/v1/media/{id}/metadata/refresh` | `library.write` |
+ | `GET /api/v1/media/{id}/stream` | `media.stream` |
+ | `POST /api/v1/playback/sessions`, `GET`/`DELETE /api/v1/playback/{id}`, `GET /api/v1/playback/{id}/stream` | `media.stream` |
+-| `PUT /api/v1/media/{id}/progress` | `history.write` |
++| `PUT /api/v1/media/{id}/progress`, `POST /api/v1/progress/batch` | `history.write` |
+ | `GET /api/v1/media/{id}/progress`, `GET /api/v1/history`, `GET /api/v1/continue-watching` | `history.read` |
+ | `POST`/`GET`/`PATCH`/`DELETE /api/v1/uploads…` | `upload` |
+ | `GET`/`POST`/`DELETE /api/v1/tokens…` | `profile` |
+@@ -189,6 +189,18 @@ The `requestId` is also returned in the `X-Request-Id` header. List endpoints ta
+ - `duration` on media and files: milliseconds. `runtime`: minutes.
+ - Playback progress `position`/`duration`: seconds. If `completed` is omitted it is set once 95% is reached.
+ 
++### Offline progress
++
++Clients that queue progress while offline send the time each update was recorded as `recordedAt`
++(ISO-8601). The server clamps it to its own clock, keeps the newest progress per media item (an update
++older than the stored one returns `"applied": false` with the stored values), and dates the watch-history
++entry with it. Without `recordedAt` the server's time is used.
++
++`POST /api/v1/progress/batch` takes `{"updates": [{"mediaId", "position", "duration", "completed",
++"recordedAt"}, …]}` (up to 500) and applies them oldest first. Each update succeeds or fails on its own; the
++response has one result per update, in request order, with `status` `APPLIED`, `IGNORED` (older than the
++stored progress) or `FAILED` (with `error` and `message`).
++
+ ### Playback
+ 
+ `POST /api/v1/playback/sessions` compares the file (probed with ffprobe) with the client's
+diff --git a/src/main/java/org/openbased/progress/ProgressController.java b/src/main/java/org/openbased/progress/ProgressController.java
+index 3fe2831..e48282a 100644
+--- a/src/main/java/org/openbased/progress/ProgressController.java
++++ b/src/main/java/org/openbased/progress/ProgressController.java
+@@ -1,34 +1,33 @@
+ package org.openbased.progress;
+ 
+-import java.time.Duration;
+ import java.time.Instant;
++import java.util.ArrayList;
++import java.util.Comparator;
+ import java.util.List;
+-import java.util.Map;
+ import java.util.Set;
++import java.util.stream.IntStream;
+ 
+ import jakarta.validation.Valid;
++import jakarta.validation.constraints.NotBlank;
+ import jakarta.validation.constraints.NotNull;
+ import jakarta.validation.constraints.PositiveOrZero;
++import jakarta.validation.constraints.Size;
+ 
+ import io.swagger.v3.oas.annotations.Operation;
+ import io.swagger.v3.oas.annotations.tags.Tag;
+ 
+ import org.openbased.common.ApiException;
+-import org.openbased.common.Ids;
+ import org.openbased.common.PageResponse;
+ import org.openbased.common.Paging;
+-import org.openbased.event.EventBus;
+-import org.openbased.event.EventType;
+ import org.openbased.media.MediaItem;
+ import org.openbased.media.MediaLookup;
+-import org.openbased.playback.PlaybackSessions;
+ import org.openbased.security.AccessService;
+ import org.openbased.security.Scopes;
+ import org.openbased.user.User;
+ import org.springframework.data.domain.Sort;
+-import org.springframework.transaction.annotation.Transactional;
+ import org.springframework.web.bind.annotation.GetMapping;
+ import org.springframework.web.bind.annotation.PathVariable;
++import org.springframework.web.bind.annotation.PostMapping;
+ import org.springframework.web.bind.annotation.PutMapping;
+ import org.springframework.web.bind.annotation.RequestBody;
+ import org.springframework.web.bind.annotation.RequestMapping;
+@@ -40,32 +39,43 @@ import org.springframework.web.bind.annotation.RestController;
+ @Tag(name = "Playback Progress")
+ public class ProgressController {
+ 
+-    /** Progress updates within this window of the previous one belong to the same viewing. */
+-    private static final Duration SAME_VIEWING = Duration.ofHours(6);
++    /** At most this many updates are accepted in one batch. */
++    static final int MAX_BATCH = 500;
+ 
+     private final PlaybackProgressRepository progress;
+     private final WatchHistoryRepository history;
++    private final ProgressService service;
+     private final MediaLookup lookup;
+-    private final PlaybackSessions sessions;
+-    private final EventBus events;
+     private final AccessService access;
+ 
+-    public ProgressController(PlaybackProgressRepository progress, WatchHistoryRepository history, MediaLookup lookup,
+-            PlaybackSessions sessions, EventBus events, AccessService access) {
++    public ProgressController(PlaybackProgressRepository progress, WatchHistoryRepository history,
++            ProgressService service, MediaLookup lookup, AccessService access) {
+         this.progress = progress;
+         this.history = history;
++        this.service = service;
+         this.lookup = lookup;
+-        this.sessions = sessions;
+-        this.events = events;
+         this.access = access;
+     }
+ 
+-    /** Positions and durations are in seconds. */
++    /**
++     * Positions and durations are in seconds. {@code recordedAt} is when the client recorded the progress; send
++     * it for updates that were queued while offline. Updates older than the stored progress are not applied.
++     */
+     public record ProgressUpdate(@NotNull @PositiveOrZero Double position, @PositiveOrZero Double duration,
+-            Boolean completed) {
++            Boolean completed, Instant recordedAt) {
++
++        ProgressService.Update toUpdate() {
++            return new ProgressService.Update(position, duration, completed, recordedAt);
++        }
+     }
+ 
+-    public record ProgressSaved(String mediaId, double position, boolean completed) {
++    /** {@code applied} is false when a newer update was already stored; the stored values are returned. */
++    public record ProgressSaved(String mediaId, double position, boolean completed, Instant updatedAt,
++            boolean applied) {
++
++        static ProgressSaved of(ProgressService.Result r) {
++            return new ProgressSaved(r.mediaId(), r.position(), r.completed(), r.updatedAt(), r.applied());
++        }
+     }
+ 
+     public record ProgressResponse(double position, Double duration, boolean completed, Instant updatedAt) {
+@@ -77,52 +87,61 @@ public class ProgressController {
+     public record ContinueItem(String mediaId, double position, Double duration, Instant updatedAt) {
+     }
+ 
++    public record BatchItem(@NotBlank String mediaId, @NotNull @PositiveOrZero Double position,
++            @PositiveOrZero Double duration, Boolean completed, Instant recordedAt) {
++    }
++
++    public record BatchRequest(@NotNull @Size(max = MAX_BATCH) List<@NotNull @Valid BatchItem> updates) {
++    }
++
++    public enum BatchStatus {
++        APPLIED,
++        IGNORED,
++        FAILED
++    }
++
++    /**
++     * One result per update, in request order. {@code position}, {@code completed} and {@code updatedAt} are the
++     * stored progress after the update; {@code error} and {@code message} are set when it failed.
++     */
++    public record BatchResult(String mediaId, BatchStatus status, Double position, Boolean completed,
++            Instant updatedAt, String error, String message) {
++    }
++
++    public record BatchResponse(List<BatchResult> results) {
++    }
++
+     @PutMapping("/media/{mediaId}/progress")
+-    @Transactional
+-    @Operation(summary = "Update playback progress (seconds)")
++    @Operation(summary = "Update playback progress (seconds); older updates than the stored progress are ignored")
+     public ProgressSaved update(@PathVariable String mediaId, @Valid @RequestBody ProgressUpdate request) {
++        access.require(Scopes.HISTORY_WRITE);
++        return ProgressSaved.of(service.record(access.user(), mediaId, request.toUpdate()));
++    }
++
++    @PostMapping("/progress/batch")
++    @Operation(summary = "Apply queued progress updates, e.g. from offline playback; each update succeeds or fails "
++            + "on its own")
++    public BatchResponse batch(@Valid @RequestBody BatchRequest request) {
+         access.require(Scopes.HISTORY_WRITE);
+         User user = access.user();
+-        MediaItem item = lookup.media(mediaId);
+-        if (request.duration() != null && request.position() > request.duration()) {
+-            throw ApiException.unprocessable("VALIDATION_FAILED", "position must not exceed duration");
+-        }
++        // Apply in the order the updates were recorded, so the newest one for a media item wins.
+         Instant now = Instant.now();
+-        PlaybackProgress p = progress.findByUserIdAndMediaId(user.getId(), item.getId()).orElseGet(() -> {
+-            PlaybackProgress created = new PlaybackProgress();
+-            created.setId(Ids.prefixed("prog"));
+-            created.setUserId(user.getId());
+-            created.setMediaId(item.getId());
+-            return created;
+-        });
+-        boolean completed = request.completed() != null ? request.completed()
+-                : request.duration() != null && request.duration() > 0 && request.position() / request.duration() >= 0.95;
+-        p.setPosition(request.position());
+-        if (request.duration() != null) {
+-            p.setDuration(request.duration());
++        List<Integer> order = new ArrayList<>(IntStream.range(0, request.updates().size()).boxed().toList());
++        order.sort(Comparator.comparing(i -> ProgressService.effectiveTime(request.updates().get(i).recordedAt(), now)));
++        BatchResult[] results = new BatchResult[order.size()];
++        for (int i : order) {
++            BatchItem u = request.updates().get(i);
++            try {
++                ProgressService.Result r = service.record(user, u.mediaId(),
++                        new ProgressService.Update(u.position(), u.duration(), u.completed(), u.recordedAt()));
++                results[i] = new BatchResult(r.mediaId(), r.applied() ? BatchStatus.APPLIED : BatchStatus.IGNORED,
++                        r.position(), r.completed(), r.updatedAt(), null, null);
++            } catch (ApiException e) {
++                results[i] = new BatchResult(u.mediaId(), BatchStatus.FAILED, null, null, null, e.error(),
++                        e.getMessage());
++            }
+         }
+-        p.setCompleted(completed);
+-        p.setUpdatedAt(now);
+-        progress.save(p);
+-
+-        WatchHistoryEntry entry = history.findFirstByUserIdAndMediaIdOrderByWatchedAtDesc(user.getId(), item.getId())
+-                .filter(h -> h.getWatchedAt().isAfter(now.minus(SAME_VIEWING)))
+-                .filter(h -> !h.isCompleted() || completed)
+-                .orElseGet(() -> {
+-                    WatchHistoryEntry created = new WatchHistoryEntry();
+-                    created.setId(Ids.prefixed("hist"));
+-                    created.setUserId(user.getId());
+-                    created.setMediaId(item.getId());
+-                    return created;
+-                });
+-        entry.setWatchedAt(now);
+-        entry.setCompleted(entry.isCompleted() || completed);
+-        history.save(entry);
+-
+-        sessions.touch(user.getId(), item.getId());
+-        events.publishForUser(EventType.PLAYBACK_PROGRESS, user.getId(), Map.of("mediaId", item.getId(),
+-                "position", request.position(), "completed", completed));
+-        return new ProgressSaved(item.getId(), p.getPosition(), p.isCompleted());
++        return new BatchResponse(List.of(results));
+     }
+ 
+     @GetMapping("/media/{mediaId}/progress")
+diff --git a/src/main/java/org/openbased/progress/ProgressService.java b/src/main/java/org/openbased/progress/ProgressService.java
+new file mode 100644
+index 0000000..de90d62
+--- /dev/null
++++ b/src/main/java/org/openbased/progress/ProgressService.java
+@@ -0,0 +1,117 @@
++package org.openbased.progress;
++
++import java.time.Duration;
++import java.time.Instant;
++import java.util.Map;
++import java.util.Optional;
++
++import org.openbased.common.ApiException;
++import org.openbased.common.Ids;
++import org.openbased.event.EventBus;
++import org.openbased.event.EventType;
++import org.openbased.media.MediaItem;
++import org.openbased.media.MediaLookup;
++import org.openbased.playback.PlaybackSessions;
++import org.openbased.user.User;
++import org.springframework.stereotype.Service;
++import org.springframework.transaction.annotation.Transactional;
++
++/**
++ * Records playback progress and watch history. Updates may carry the time they were recorded on the client
++ * (for progress made offline and synced later): that time is clamped to the server clock, an update older than
++ * the stored progress is not applied, and the history entry is dated with it.
++ */
++@Service
++public class ProgressService {
++
++    /** Progress updates within this window of the previous one belong to the same viewing. */
++    static final Duration SAME_VIEWING = Duration.ofHours(6);
++
++    private final PlaybackProgressRepository progress;
++    private final WatchHistoryRepository history;
++    private final MediaLookup lookup;
++    private final PlaybackSessions sessions;
++    private final EventBus events;
++
++    public ProgressService(PlaybackProgressRepository progress, WatchHistoryRepository history, MediaLookup lookup,
++            PlaybackSessions sessions, EventBus events) {
++        this.progress = progress;
++        this.history = history;
++        this.lookup = lookup;
++        this.sessions = sessions;
++        this.events = events;
++    }
++
++    /** Positions and durations are in seconds; {@code recordedAt} is optional. */
++    public record Update(double position, Double duration, Boolean completed, Instant recordedAt) {
++    }
++
++    /**
++     * The progress stored after an update. {@code applied} is false when the update was older than the stored
++     * progress; the stored values are returned unchanged in that case.
++     */
++    public record Result(String mediaId, double position, boolean completed, Instant updatedAt, boolean applied) {
++    }
++
++    /** Effective time of an update: the client's time, but never later than the server's clock. */
++    static Instant effectiveTime(Instant recordedAt, Instant now) {
++        return recordedAt == null || recordedAt.isAfter(now) ? now : recordedAt;
++    }
++
++    @Transactional
++    public Result record(User user, String mediaId, Update update) {
++        MediaItem item = lookup.media(mediaId);
++        if (update.duration() != null && update.position() > update.duration()) {
++            throw ApiException.unprocessable("VALIDATION_FAILED", "position must not exceed duration");
++        }
++        Instant at = effectiveTime(update.recordedAt(), Instant.now());
++        boolean completed = update.completed() != null ? update.completed()
++                : update.duration() != null && update.duration() > 0 && update.position() / update.duration() >= 0.95;
++
++        // The viewing happened even if newer progress from another device already replaced this position.
++        recordHistory(user, item, at, completed);
++
++        Optional<PlaybackProgress> stored = progress.findByUserIdAndMediaId(user.getId(), item.getId());
++        if (stored.isPresent() && stored.get().getUpdatedAt() != null && stored.get().getUpdatedAt().isAfter(at)) {
++            PlaybackProgress p = stored.get();
++            return new Result(item.getId(), p.getPosition(), p.isCompleted(), p.getUpdatedAt(), false);
++        }
++        PlaybackProgress p = stored.orElseGet(() -> {
++            PlaybackProgress created = new PlaybackProgress();
++            created.setId(Ids.prefixed("prog"));
++            created.setUserId(user.getId());
++            created.setMediaId(item.getId());
++            return created;
++        });
++        p.setPosition(update.position());
++        if (update.duration() != null) {
++            p.setDuration(update.duration());
++        }
++        p.setCompleted(completed);
++        p.setUpdatedAt(at);
++        progress.save(p);
++
++        sessions.touch(user.getId(), item.getId());
++        events.publishForUser(EventType.PLAYBACK_PROGRESS, user.getId(), Map.of("mediaId", item.getId(),
++                "position", update.position(), "completed", completed));
++        return new Result(item.getId(), p.getPosition(), p.isCompleted(), p.getUpdatedAt(), true);
++    }
++
++    private void recordHistory(User user, MediaItem item, Instant at, boolean completed) {
++        WatchHistoryEntry entry = history.findFirstByUserIdAndMediaIdAndWatchedAtBetweenOrderByWatchedAtDesc(
++                user.getId(), item.getId(), at.minus(SAME_VIEWING), at.plus(SAME_VIEWING))
++                .filter(h -> !h.isCompleted() || completed)
++                .orElseGet(() -> {
++                    WatchHistoryEntry created = new WatchHistoryEntry();
++                    created.setId(Ids.prefixed("hist"));
++                    created.setUserId(user.getId());
++                    created.setMediaId(item.getId());
++                    return created;
++                });
++        if (entry.getWatchedAt() == null || entry.getWatchedAt().isBefore(at)) {
++            entry.setWatchedAt(at);
++        }
++        entry.setCompleted(entry.isCompleted() || completed);
++        history.save(entry);
++    }
++}
+diff --git a/src/main/java/org/openbased/progress/WatchHistoryRepository.java b/src/main/java/org/openbased/progress/WatchHistoryRepository.java
+index 220dc02..1f9e2f7 100644
+--- a/src/main/java/org/openbased/progress/WatchHistoryRepository.java
++++ b/src/main/java/org/openbased/progress/WatchHistoryRepository.java
+@@ -1,5 +1,6 @@
+ package org.openbased.progress;
+ 
++import java.time.Instant;
+ import java.util.Collection;
+ import java.util.Optional;
+ 
+@@ -11,7 +12,8 @@ import org.springframework.data.jpa.repository.Query;
+ 
+ public interface WatchHistoryRepository extends JpaRepository<WatchHistoryEntry, String> {
+ 
+-    Optional<WatchHistoryEntry> findFirstByUserIdAndMediaIdOrderByWatchedAtDesc(String userId, String mediaId);
++    Optional<WatchHistoryEntry> findFirstByUserIdAndMediaIdAndWatchedAtBetweenOrderByWatchedAtDesc(String userId,
++            String mediaId, Instant from, Instant to);
+ 
+     @Query("""
+             select h from WatchHistoryEntry h
+diff --git a/src/test/java/org/openbased/ApiIntegrationTest.java b/src/test/java/org/openbased/ApiIntegrationTest.java
+index e9af6f4..3532f81 100644
+--- a/src/test/java/org/openbased/ApiIntegrationTest.java
++++ b/src/test/java/org/openbased/ApiIntegrationTest.java
+@@ -13,6 +13,7 @@ import java.nio.charset.StandardCharsets;
+ import java.nio.file.Files;
+ import java.nio.file.Path;
+ import java.time.Duration;
++import java.time.Instant;
+ import java.util.ArrayList;
+ import java.util.Base64;
+ import java.util.List;
+@@ -192,6 +193,63 @@ class ApiIntegrationTest {
+         assertThat(call("GET", streamUrl, token("bob-svc", "media.stream"), null).status()).isEqualTo(404);
+     }
+ 
++    @Test
++    void offlineProgressIsSyncedNewestFirst() throws Exception {
++        Path dir = mediaDir("offline-" + System.nanoTime(), "Arrival (2016).mkv", 300);
++        Files.write(dir.resolve("Dune (2021).mkv"), new byte[300]);
++        String libraryId = createLibrary("Offline", dir, true);
++        scan(libraryId);
++        JsonNode items = call("GET", "/api/v1/media?library=" + libraryId + "&sort=title", admin, null).json()
++                .path("items");
++        String arrival = items.get(0).path("id").asText();
++        String dune = items.get(1).path("id").asText();
++        Instant now = Instant.now();
++
++        Response current = call("PUT", "/api/v1/media/" + arrival + "/progress", admin,
++                Map.of("position", 100, "duration", 7200));
++        assertThat(current.json().path("applied").asBoolean()).isTrue();
++
++        // Progress recorded offline yesterday does not replace newer progress, but the viewing is in the history.
++        Instant yesterday = now.minus(Duration.ofDays(1)).truncatedTo(java.time.temporal.ChronoUnit.SECONDS);
++        Response stale = call("PUT", "/api/v1/media/" + arrival + "/progress", admin,
++                Map.of("position", 50, "duration", 7200, "recordedAt", yesterday.toString()));
++        assertThat(stale.status()).isEqualTo(200);
++        assertThat(stale.json().path("applied").asBoolean()).isFalse();
++        assertThat(stale.json().path("position").asDouble()).isEqualTo(100);
++        assertThat(call("GET", "/api/v1/media/" + arrival + "/progress", admin, null).json().path("position")
++                .asDouble()).isEqualTo(100);
++        List<Instant> watched = new ArrayList<>();
++        for (JsonNode h : call("GET", "/api/v1/history?pageSize=200", admin, null).json().path("items")) {
++            if (arrival.equals(h.path("mediaId").asText())) {
++                watched.add(Instant.parse(h.path("watchedAt").asText()));
++            }
++        }
++        assertThat(watched).hasSize(2).contains(yesterday);
++
++        // A time ahead of the server's clock is clamped to it.
++        Response future = call("PUT", "/api/v1/media/" + arrival + "/progress", admin,
++                Map.of("position", 200, "recordedAt", now.plus(Duration.ofDays(1)).toString()));
++        assertThat(future.json().path("applied").asBoolean()).isTrue();
++        assertThat(Instant.parse(future.json().path("updatedAt").asText())).isBefore(now.plus(Duration.ofMinutes(5)));
++
++        // Batch updates are applied oldest first and fail one by one.
++        Response batch = call("POST", "/api/v1/progress/batch", admin, Map.of("updates", List.of(
++                Map.of("mediaId", dune, "position", 400, "recordedAt", now.minus(Duration.ofHours(1)).toString()),
++                Map.of("mediaId", dune, "position", 350, "recordedAt", now.minus(Duration.ofHours(2)).toString()),
++                Map.of("mediaId", dune, "position", 900, "duration", 600),
++                Map.of("mediaId", "media_missing", "position", 1))));
++        assertThat(batch.status()).isEqualTo(200);
++        JsonNode results = batch.json().path("results");
++        assertThat(results.findValuesAsText("status")).containsExactly("APPLIED", "APPLIED", "FAILED", "FAILED");
++        assertThat(results.get(2).path("error").asText()).isEqualTo("VALIDATION_FAILED");
++        assertThat(results.get(3).path("error").asText()).isEqualTo("MEDIA_NOT_FOUND");
++        assertThat(call("GET", "/api/v1/media/" + dune + "/progress", admin, null).json().path("position")
++                .asDouble()).isEqualTo(400);
++
++        assertThat(call("POST", "/api/v1/progress/batch", token("admin-svc", "history.read"),
++                Map.of("updates", List.of())).status()).isEqualTo(403);
++    }
++
+     @Test
+     void privateLibrariesAreHiddenFromOtherUsers() throws Exception {
+         Path dir = mediaDir("private-" + System.nanoTime(), "Secret Film (2001).mp4", 100);
+-- 
+2.43.0
+
