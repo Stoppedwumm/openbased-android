@@ -26,7 +26,10 @@ Agreed with the OpenBased team by email (reply to `email-to-openbased-team.md`).
    - A history entry is only extended by a viewing at or before `recordedAt`; an offline viewing synced late becomes its own entry.
    - An unexpected error in one batch item gives `FAILED` / `INTERNAL_ERROR` for that item; a malformed item rejects the whole batch with `422 VALIDATION_FAILED`.
    - Concurrent first updates for the same media item retry once instead of returning 500 (`1b6d7ae`).
-3. Point 3 (`media.download` + `/download`): **us**, after point 5.
+3. Point 3 (`media.download` + `/download`): **us**. In review as Stoppedwumm/openbased#2. For the app's downloader:
+   - Check `media.download` in the granted scopes before offering downloads.
+   - `HEAD` first to get `Content-Length` and `ETag`; resume with `Range: bytes=<n>-` + `If-Range: <ETag>`.
+   - A `206` continues the file; a `200` means the file changed, so restart from zero with the new `ETag`.
 4. Point 4, then the rest of point 6: later.
 
 ## Issue drafts (one per point, for `Stoppedwumm/openbased`)
