@@ -62,12 +62,13 @@ class AuthManager(
 
     /** Starts a sign-in and returns the URL to open in a Custom Tab. */
     suspend fun beginLogin(serverUrl: String): String {
-        val base = normalizeServerUrl(serverUrl)
-        val discovery = discover(base)
+        val discovery = discover(normalizeServerUrl(serverUrl))
         val verifier = Pkce.verifier()
         val state = Pkce.state()
+        // The API is called at the server's own address (its issuer), not the one typed: when the typed address
+        // redirects (http to https, another host name), HTTP clients drop the token on the redirect.
         store.savePendingLogin(
-            PendingLogin(base, discovery.tokenEndpoint, discovery.revocationEndpoint, verifier, state),
+            PendingLogin(apiBase(discovery), discovery.tokenEndpoint, discovery.revocationEndpoint, verifier, state),
         )
         return discovery.authorizationEndpoint.toHttpUrl().newBuilder()
             .addQueryParameter("response_type", "code")
@@ -117,6 +118,26 @@ class AuthManager(
         )
         store.savePendingLogin(null)
         _signedIn.value = true
+    }
+
+    /**
+     * Moves a sign-in made with the typed address (as earlier versions did) to the server's own address, when
+     * they differ. Best effort: does nothing when the server cannot be reached.
+     */
+    suspend fun updateServerAddress() {
+        val session = store.session() ?: return
+        val discovery = try {
+            discover(session.serverUrl)
+        } catch (e: SignInException) {
+            return
+        }
+        val base = apiBase(discovery)
+        refreshLock.withLock {
+            val current = store.session() ?: return
+            if (current.serverUrl != base) {
+                store.saveSession(current.copy(serverUrl = base))
+            }
+        }
     }
 
     /** A current access token, refreshed first if it is about to expire; null when signed out. */
@@ -221,6 +242,9 @@ class AuthManager(
             "openid profile media.read media.stream media.download library.read history.read history.write"
         private const val EXPIRY_MARGIN_SECONDS = 30
         private val REJECTED = setOf("invalid_grant", "invalid_client", "unauthorized_client")
+
+        /** The server's own address, from its discovery document. */
+        fun apiBase(discovery: Discovery): String = normalizeServerUrl(discovery.issuer)
 
         /** `bigbox:8080` → `http://bigbox:8080`; no trailing slash. Plain HTTP when no scheme is given. */
         fun normalizeServerUrl(input: String): String {

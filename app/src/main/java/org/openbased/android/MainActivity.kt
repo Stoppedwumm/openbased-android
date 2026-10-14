@@ -51,8 +51,12 @@ class MainActivity : ComponentActivity() {
     override fun onStart() {
         super.onStart()
         if (container.auth.signedIn.value) {
-            CatalogSyncWorker.syncNow(this)
-            ProgressSyncWorker.enqueue(this)
+            lifecycleScope.launch {
+                // Fixes sign-ins stored with an address that redirects, before anything syncs.
+                container.auth.updateServerAddress()
+                CatalogSyncWorker.syncNow(this@MainActivity)
+                ProgressSyncWorker.enqueue(this@MainActivity)
+            }
         }
     }
 

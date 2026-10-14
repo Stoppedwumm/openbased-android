@@ -68,6 +68,12 @@ class OpenBasedApi(
             val body = response.body?.string().orEmpty()
             response.close()
             val error = runCatching { json.decodeFromString<ApiError>(body) }.getOrNull()
+            val finalUrl = response.request.url
+            if (response.code == 401 && !AuthInterceptor.sameOrigin(finalUrl, request.url)) {
+                throw ApiException(401, "REDIRECTED",
+                    "The server redirected to ${finalUrl.scheme}://${finalUrl.host}:${finalUrl.port}, which drops the " +
+                        "sign-in. Sign out and sign in with that address.")
+            }
             throw ApiException(response.code, error?.error ?: "HTTP_${response.code}",
                 error?.message?.takeIf { it.isNotBlank() } ?: "HTTP ${response.code}")
         }
